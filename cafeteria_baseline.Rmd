@@ -1,0 +1,877 @@
+---
+title: "Untitled"
+output:
+  html_document:
+    number_sections: true
+    fig_caption: true
+    toc: true
+    fig_width: 5
+    fig_height: 4
+    theme: cosmo
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.align = "center")
+```
+
+# Preparations (준비작업) {.tabset .tabset-fade}
+
+## Libraries
+
+```{r load_lib, message=FALSE, warning=FALSE, results='hide'}
+library(data.table)
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(stringr)
+library(skimr)
+library(inspectdf)
+library(anomalize)
+theme_set(theme_bw())
+```
+
+## Data load {.tabset .tabset-fade}
+
+```{r}
+file_path <- "./data/"
+files <- list.files(file_path)
+files
+```
+
+```{r, message=FALSE}
+train <- fread(file.path(file_path, "train.csv"), encoding = 'UTF-8')
+test <- fread(file.path(file_path, "test.csv"), encoding = 'UTF-8')
+sample_submission <- fread(file.path(file_path, "sample_submission.csv"), encoding = 'UTF-8')
+
+```
+
+```{r}
+train %>% head()
+train %>% glimpse()
+train %>% skim()
+```
+
+```{r}
+test %>% head()
+test %>% skim()
+```
+
+# 데이터 전처리 {.tabset .tabset-fade}
+
+## Generate date variable
+
+```{r}
+train %>% 
+  select(-요일) %>% 
+  mutate(일자 = ymd(일자),
+           year = year(일자), 
+           month = month(일자), 
+           day = day(일자), 
+           wday = wday(일자)) %>% 
+  select(일자, year, month, wday, day, everything()) -> train
+
+```
+
+## text data preprocessing
+
+### 정규표현식
+
+**Group and ranges**
+
+-   \| : 또는
+
+-   () : 그룹
+
+-   [] : 문자셋, 괄호 안에 어떤 문자든지
+
+-   [\^] : 괄호 안에 해당 문자를 제외
+
+**Quantifier**
+
+-   ? : 없거나 or 있거나
+
+-   \* : 없거나 or 있거나 or 많거나
+
+-   +: 하나 또는 많이
+
+-   {n}: n번 반복
+
+-   {min,}: 최소
+
+-   {min,max}: 최소, 최대
+
+**Boundary type**
+
+-   \b: 단어 경계
+
+-   \B: 단어 경계가 아님
+
+-   \^: 단어의 시작
+
+-   \$: 단어의 끝
+
+**Character classes**
+
+-   \\: 특수 문자가 아닌 문자
+
+-   .: 어떤 글자(줄바꿈 문자 제외)
+
+-   \\d: digit 숫자
+
+-   \\D: digit 숫자 아님
+
+-   \\w: word 문자
+
+-   \\W: word 문자 아님
+
+### grepl(pattern, x, ignore.case = FALSE, fixed = FALSE)
+
+-   pattern : 정규 표현식
+
+-   x : 전처리하기 위해 지정한 벡터
+
+-   ingnore.case = FALSE : 대소문자 구분 X
+
+-   fixed = TRUE : 정규표현식이 아닌 정확하게 매치되는 문자 반환
+
+    <div>
+
+    -   Ex) A.b로 정규표현식을 정의하면 A 다음에 임의의 문자 다음 b 패턴을 갖는 문자열을 매칭하지만, fixed = TRUE일 경우 문자 그대로 A.b 매칭
+
+    </div>
+
+### train + test 병합
+
+```{r}
+train %>% 
+  bind_rows(test) -> all_data
+
+all_data %>% 
+  select(-조식메뉴) -> all_data
+
+all_data %>% names()
+```
+
+### 신메뉴 추가
+
+```{r}
+# all_data$석식메뉴[grepl(pattern = '\(New\)' ,all_data$석식메뉴)]
+all_data$석식메뉴[grepl(pattern = '\\(New\\)' ,all_data$석식메뉴)] # \\: R에서는 역슬래시 두개를 사용해서 메타문자가 갖는 의미를 억제함 
+
+all_data %>% 
+  mutate(new_recipe_lunch = ifelse(grepl(pattern = '\\(New\\)', 중식메뉴), 'Y', 'N'), 
+         new_recipe_dinner = ifelse(grepl(pattern = '\\(New\\)', 석식메뉴), 'Y', 'N')) -> all_data
+
+```
+
+### 중식메뉴 전처리
+
+```{r}
+all_data %>% 
+  pull(중식메뉴) %>% 
+  str_replace_all(pattern = '\\([가-힣:,./]+\\)?', '') %>% # ?가 왜 들어가는지 모르겠음 
+  str_replace_all(pattern = '\\(?[가-힣:,./]+\\)','') %>% 
+  str_replace_all(pattern = '  ',' ') %>%
+  str_split(pattern='\\s', simplify = T) %>%  # 공백으로 split
+  as_tibble() -> all_data1
+
+all_data %>% dim()
+all_data1 %>% dim()
+
+all_data1 <- bind_cols(all_data %>% select(일자), all_data1)
+
+
+all_data1 %>% 
+  unite('mess_menu',V5:V8, sep='_') %>% 
+  mutate(
+    # 김치 겉절이 깍두기 등
+    kimchi = str_extract(mess_menu, pattern = "[가-힣]+김치|[가-힣]+두기|[가-힣]+겉절이+|[가-힣]+박지"),
+    # 요구르트 식혜 과일류
+    desert = str_extract(mess_menu, pattern = "요구르트|[가-힣]+D|[가-힣]*음료|[가-힣]*호떡|식혜|청포도|바나나|복숭아|오렌지|수박|[가-힣]*토마토|[가-힣]+주스|[가-힣]*아이스티|[가-힣]+빵|[가-힣]*케익|요플레|[가-힣]*츄러스|[가-힣]*화채"),
+    # ~ 샐러드
+    salad = str_extract(mess_menu, pattern = "[가-힣]*샐러드"),
+    # 조림 무침 나물 볶음 등
+    sub_main = str_extract(mess_menu, pattern = "[가-힣]*생채|[가-힣]*무침|[가-힣]*나물|[가-힣]*볶음|[가-힣]*구이|[가-힣]*찜|[가-힣*]+쌈|[가-힣]*조림|[가-힣]*잎지|[가-힣*]*초장|[가-힣]*감자|[가-힣]*고구마|[가-힣]*두부|[가-힣]*말랭이|[가-힣]*파래김|[가-힣]*떡볶이|[가-힣]*부추전|[가-힣]*숙회|[가-힣]*스틱|탕평채|[가-힣]*냉채|[가-힣*]*양념장|[가-힣*]*잡채")
+  ) %>% 
+  select(일자, V1:V4, kimchi, desert, salad, sub_main) -> all_data1
+
+
+
+all_data1 %>% 
+  mutate(rice1 = str_split_fixed(V1,pattern = '\\/',n=3) %>% .[,1],
+         rice2 = str_split_fixed(V1,pattern = '\\/',n=3) %>% .[,2],
+         rice3 = str_split_fixed(V1,pattern = '\\/',n=3) %>% .[,3],
+         stew = V2,
+         main = V3,
+         sub_main1 = V4,
+         sub_main2 = sub_main
+  ) %>% 
+  select(-c(V1:V4),sub_main) -> all_lunch
+
+all_lunch %>% 
+  mutate_all(na_if,"") %>% # ''이면 NA로 치환 
+  replace(is.na(.), '미제공') -> all_lunch # 값이 없으면 미제공으로 모두 치환
+
+
+all_lunch %>% 
+  mutate(
+    # 메인종류 1
+    main_type_1 =
+      case_when(
+        grepl(pattern = '바베큐|장육|수육|족발|차돌|폭립|후라이드|윙|육전|보쌈|너비아니|장조림|떡갈비|고기|육|돈육|닭|치킨|목살|불고기|돈|함박|오리|쇠|소고|소세지|갈비|삼겹|삽겹|깐풍|유린기|미트', x = main) ~ '육류',
+        grepl(pattern = '산슬|골뱅이|해물|장어|연어|새우|고등어|삼치|쭈꾸미|꽁치|어|주꾸미|문어|갈치|가자미|낙지|굴비|조기|생선|임연수|동태|명태|코다리', x = main) ~ '해산물',
+        TRUE ~ '기타'),
+    #메인종류 2
+    main_type_2 = 
+      case_when(
+        grepl(pattern = '특식', x = rice1) ~ '특식',
+        main_type_1 == '육류' & grepl(pattern = '바베큐|장육|수육|폭립|차돌|족발|보쌈|돼지|제육|돈육|[^소]불고기|돈|목살|돼지갈비|삼겹|깐풍|유린기|탕수육|두루치기|등갈비|동파육', x = main) ~ '돼지고기',
+        main_type_1 == '육류' & grepl(pattern = '장조림|떡갈비|언양식|소고기|쇠|소불고기|쇠|쇠고기|우육|소갈비', x = main) ~ '소고기',
+        main_type_1 == '육류' & grepl(pattern = '후라이드|윙|닭|치킨', x = main) ~ '닭고기',
+        main_type_1 == '육류' & grepl(pattern = '오리', x = main) ~ '오리고기',
+        main_type_1 == '육류' & grepl(pattern = '미트|소세지|너비아니|함박|완자', x = main) ~ '가공육',
+        main_type_1 == '해산물' & grepl(pattern = '연어|장어|열기|고등어|삼치|꽁치|갈치|가자미|굴비|조기|생선|임연수|동태|명태|코다리', x = main) ~ '생선',
+        main_type_1 == '해산물' & grepl(pattern = '골뱅이|낙지|오징어|쭈꾸미|주꾸미|문어', x = main) ~ '오징어류',
+        main_type_1 == '해산물' & grepl(pattern = '산슬|해물전|찜|홍어|새우|누룽지|볶음|탕수|까스', x = main) ~ '조리해산물',
+        TRUE ~ '기타'),
+    #조리 방법
+    main_cook_type = 
+      case_when(
+        grepl(pattern = '[가-힣]*무침',x = main) ~ '무침',
+        grepl(pattern = '[가-힣]*구이',x = main) ~ '구이',
+        grepl(pattern = '[가-힣]*전',x = main) ~ '전',
+        grepl(pattern = '[가-힣]*조림',x = main) ~ '조림',
+        grepl(pattern = '[가-힣]*볶음',x = main) ~ '볶음',
+        grepl(pattern = '[가-힣]*떡볶이',x = main) ~ '떡볶이',
+        grepl(pattern = '[가-힣]*샐러드',x = main) ~ '샐러드',
+        grepl(pattern = '[가-힣]*말이',x = main) ~ '말이',
+        grepl(pattern = '[가-힣]*잡채',x = main) ~ '잡채',
+        grepl(pattern = '[가-힣]*냉채',x = main) ~ '냉채',
+        grepl(pattern = '[가-힣]*찜',x = main) ~ '찜',
+        grepl(pattern = '[가-힣]*프리타타',x = main) ~ '프리타타',
+        grepl(pattern = '[가-힣]*생채',x = main) ~ '생채',
+        grepl(pattern = '[가-힣*&]*장|[가-힣*&]*장',x = main) ~ '양념/장/소스',
+        grepl(pattern = '가-힣]*쌈',x = main) ~ '쌈',
+        TRUE ~ '기타'
+      ),
+    # 밥 종류
+    rice_type =
+      case_when(
+        grepl(pattern = '[가-힣]*비빔밥',x = rice1) ~ '비빔밥',
+        grepl(pattern = '[가-힣]*볶음밥',x = rice1) ~ '볶음밥',
+        grepl(pattern = '[가-힣]*영양밥',x = rice1) ~ '영양밥',
+        grepl(pattern = '[가-힣]*콩나물밥|[가-힣]*곤드레밥',x = rice1) ~ '콩나물/곤드레밥',
+        grepl(pattern = '[가-힣*]*장',x = rice1) ~ '양념장+밥',
+        grepl(pattern = '[가-힣]*덮밥|[가-힣]*라이스',x = rice1) ~ '덮밥',
+        TRUE ~ '밥'),
+    # 국 종류
+    stew_type = 
+      case_when(
+        grepl(pattern = '[가-힣]*장국',x = stew) ~ '장국',
+        grepl(pattern = '[가-힣]*무국',x = stew) ~ '무국',
+        grepl(pattern = '[가-힣]*찌개',x = stew) ~ '찌개',
+        grepl(pattern = '[가-힣]*탕',x = stew) ~ '탕',
+        grepl(pattern = '[가-힣]*개장',x = stew) ~ '개장',
+        grepl(pattern = '[가-힣]*냉국',x = stew) ~ '냉국',
+        grepl(pattern = '[가-힣]*미역국',x = stew) ~ '미역국',
+        grepl(pattern = '[가-힣]*나물국',x = stew) ~ '나물국',
+        grepl(pattern = '[가-힣]*맑은국',x = stew) ~ '맑은국',
+        grepl(pattern = '[가-힣]*북어',x = stew) ~ '북어',
+        TRUE ~ '기타국'),
+    #서브 메인 타입
+    sub_main1_type=
+      case_when(
+        grepl(pattern = '고기|치킨|돈육|닭|미트볼|소세지|함박|햄|소시지|비엔|동그랑땡',x = sub_main1) ~ '육류',
+        grepl(pattern = '메추리알|계란|두부',x = sub_main1) ~ '계란/두부',
+        grepl(pattern = '굴비|고등어|꽁치|골뱅이|맛살|임연수|갈치|동태|참치|멸치|삼치|홍어|황태|명태',x = sub_main1) ~ '생선류',
+        grepl(pattern = '쭈꾸미|주꾸미|문어|오징어|해물|해파리',x = sub_main1) ~ '오징어류',
+        grepl(pattern = '만두|어묵|',x = sub_main1) ~ '만두|어묵',
+        grepl(pattern = '감자|고구마|옥수수|과일|야채|호박|도라지|무말|브로컬리|녹두|꽈리|고추|콩나물|김치', x= sub_main1) ~ '야채/채소',
+        TRUE ~ '기타'
+      ),
+    #서브 메인 조리 방법
+    sub_main1_cook_type =
+      case_when(
+        grepl(pattern = '[가-힣]*무침',x = sub_main1) ~ '무침',
+        grepl(pattern = '[가-힣]*구이',x = sub_main1) ~ '구이',
+        grepl(pattern = '[가-힣]*전',x = sub_main1) ~ '전',
+        grepl(pattern = '[가-힣]*조림',x = sub_main1) ~ '조림',
+        grepl(pattern = '[가-힣]*볶음',x = sub_main1) ~ '볶음',
+        grepl(pattern = '[가-힣]*떡볶이',x = sub_main1) ~ '떡볶이',
+        grepl(pattern = '[가-힣]*샐러드',x = sub_main1) ~ '샐러드',
+        grepl(pattern = '[가-힣]*말이',x = sub_main1) ~ '말이',
+        grepl(pattern = '[가-힣]*잡채',x = sub_main1) ~ '잡채',
+        grepl(pattern = '[가-힣]*냉채',x = sub_main1) ~ '냉채',
+        grepl(pattern = '[가-힣]*찜',x = sub_main1) ~ '찜',
+        grepl(pattern = '[가-힣]*프리타타',x = sub_main1) ~ '프리타타',
+        grepl(pattern = '[가-힣]*생채',x = sub_main1) ~ '생채',
+        grepl(pattern = '[가-힣*&]*장|[가-힣*&]*소스',x = sub_main1) ~ '양념/장/소스',
+        grepl(pattern = '[가-힣]*쌈',x = sub_main1) ~ '쌈',
+        TRUE ~ '기타'
+      )
+  ) %>% 
+  select(일자,rice_type,stew_type,main_type_1,main_type_2,main_cook_type,
+           sub_main1_type,sub_main1_cook_type, sub_main2,kimchi,desert,salad)-> all_lunch2 
+
+colnames(all_lunch2)[-1] <- paste("lunch", colnames(all_lunch2)[-1], sep = "_")
+all_lunch2 %>% colnames()
+
+
+```
+
+### 석식메뉴 전처리
+
+```{r}
+all_data %>% 
+  pull(석식메뉴) %>%
+  str_replace_all(pattern = '\\([가-힣:,./]+\\)?','') %>% # 원산지 정보 삭제1
+  str_replace_all(pattern = '\\(?[가-힣:,./]+\\)','') %>% # 원산지 정보 삭제2
+  # str_replace_all(pattern = '\\<[가-힣:,./]+\\>','') %>% # 불필요 정보 삭제
+  str_replace_all(pattern = '  ',' ') %>% # 공백 두 개는 하나로
+  str_split(pattern='\\s', simplify = T) %>% # simplify = T -> Matrix로 변환
+  as.tibble()-> all_data2
+
+all_data2 <- bind_cols(all_data %>% select(일자), all_data2)
+
+all_data2 %>% 
+  unite('mess_menu',V5:V8, sep='_') %>% 
+  mutate(
+    # 김치 겉절이 깍두기 등
+    kimchi = str_extract(mess_menu, pattern = "[가-힣]+김치|[가-힣]+두기|[가-힣]+겉절이+|[가-힣]+박지"),
+    # 요구르트 식혜 과일류
+    desert = str_extract(mess_menu, pattern = "요구르트|[가-힣]+D|[가-힣]*음료|[가-힣]*호떡|식혜|청포도|바나나|복숭아|오렌지|수박|[가-힣]*토마토|[가-힣]+주스|[가-힣]*아이스티|[가-힣]+빵|[가-힣]*케익|요플레|[가-힣]*츄러스|[가-힣]*화채"),
+    # ~ 샐러드
+    salad = str_extract(mess_menu, pattern = "[가-힣]*샐러드"),
+    # 조림 무침 나물 볶음 등
+    sub_main = str_extract(mess_menu, pattern = "[가-힣]*생채|[가-힣]*무침|[가-힣]*나물|[가-힣]*볶음|[가-힣]*구이|[가-힣]*찜|[가-힣*]+쌈|[가-힣]*조림|[가-힣]*잎지|[가-힣*]*초장|[가-힣]*감자|[가-힣]*고구마|[가-힣]*두부|[가-힣]*말랭이|[가-힣]*파래김|[가-힣]*떡볶이|[가-힣]*부추전|[가-힣]*숙회|[가-힣]*스틱|탕평채|[가-힣]*냉채|[가-힣*]*양념장|[가-힣*]*잡채")
+  ) %>% 
+  select(일자, V1:V4, kimchi, desert, salad, sub_main) -> all_data2
+## 밥,국, main,sub_main, sub_main2, 김치, 샐러드, 디저트로 분류
+all_data2 %>% 
+  mutate(rice1 = str_split_fixed(V1,pattern = '\\/',n=3) %>% .[,1],
+         rice2 = str_split_fixed(V1,pattern = '\\/',n=3) %>% .[,2],
+         rice3 = str_split_fixed(V1,pattern = '\\/',n=3) %>% .[,3],
+         stew = V2,
+         main = V3,
+         sub_main1 = V4,
+         sub_main2 = sub_main
+  ) %>% 
+  select(-c(V1:V4),sub_main) -> all_dinner
+all_dinner %>%
+  mutate_all(na_if,"") %>% # ''이면 NA로 치환 
+  skim() 
+# NA이거나 ''인 값들은 치환
+all_dinner %>% 
+  mutate_all(na_if,"") %>% # ''이면 NA로 치환 
+  replace(is.na(.), '미제공') -> all_dinner # 값이 없으면 미제공으로 모두 치환
+# replace_na(list(salad = '미제공',desert = '미제공',sub_main='미제공', kimchi='미제공'))
+# 메뉴 Feature Engineering
+all_dinner %>% 
+  mutate(
+    # 메인종류 1
+    main_type_1 =
+      case_when(
+        grepl(pattern = '바베큐|장육|수육|족발|차돌|폭립|후라이드|윙|육전|보쌈|너비아니|장조림|떡갈비|고기|육|돈육|닭|치킨|목살|불고기|돈|함박|오리|쇠|소고|소세지|갈비|삼겹|삽겹|깐풍|유린기|미트', x = main) ~ '육류',
+        grepl(pattern = '산슬|골뱅이|해물|장어|연어|새우|고등어|삼치|쭈꾸미|꽁치|어|주꾸미|문어|갈치|가자미|낙지|굴비|조기|생선|임연수|동태|명태|코다리', x = main) ~ '해산물',
+        TRUE ~ '기타'),
+    #메인종류 2
+    main_type_2 = 
+      case_when(
+        grepl(pattern = '특식', x = rice1) ~ '특식',
+        main_type_1 == '육류' & grepl(pattern = '바베큐|장육|수육|폭립|차돌|족발|보쌈|돼지|제육|돈육|[^소]불고기|돈|목살|돼지갈비|삼겹|깐풍|유린기|탕수육|두루치기|등갈비|동파육', x = main) ~ '돼지고기',
+        main_type_1 == '육류' & grepl(pattern = '장조림|떡갈비|언양식|소고기|쇠|소불고기|쇠|쇠고기|우육|소갈비', x = main) ~ '소고기',
+        main_type_1 == '육류' & grepl(pattern = '후라이드|윙|닭|치킨', x = main) ~ '닭고기',
+        main_type_1 == '육류' & grepl(pattern = '오리', x = main) ~ '오리고기',
+        main_type_1 == '육류' & grepl(pattern = '미트|소세지|너비아니|함박|완자', x = main) ~ '가공육',
+        main_type_1 == '해산물' & grepl(pattern = '연어|장어|열기|고등어|삼치|꽁치|갈치|가자미|굴비|조기|생선|임연수|동태|명태|코다리', x = main) ~ '생선',
+        main_type_1 == '해산물' & grepl(pattern = '골뱅이|낙지|오징어|쭈꾸미|주꾸미|문어', x = main) ~ '오징어류',
+        main_type_1 == '해산물' & grepl(pattern = '산슬|해물전|찜|홍어|새우|누룽지|볶음|탕수|까스', x = main) ~ '조리해산물',
+        TRUE ~ '기타'),
+    #조리 방법
+    main_cook_type = 
+      case_when(
+        grepl(pattern = '[가-힣]*무침',x = main) ~ '무침',
+        grepl(pattern = '[가-힣]*구이',x = main) ~ '구이',
+        grepl(pattern = '[가-힣]*전',x = main) ~ '전',
+        grepl(pattern = '[가-힣]*조림',x = main) ~ '조림',
+        grepl(pattern = '[가-힣]*볶음',x = main) ~ '볶음',
+        grepl(pattern = '[가-힣]*떡볶이',x = main) ~ '떡볶이',
+        grepl(pattern = '[가-힣]*샐러드',x = main) ~ '샐러드',
+        grepl(pattern = '[가-힣]*말이',x = main) ~ '말이',
+        grepl(pattern = '[가-힣]*잡채',x = main) ~ '잡채',
+        grepl(pattern = '[가-힣]*냉채',x = main) ~ '냉채',
+        grepl(pattern = '[가-힣]*찜',x = main) ~ '찜',
+        grepl(pattern = '[가-힣]*프리타타',x = main) ~ '프리타타',
+        grepl(pattern = '[가-힣]*생채',x = main) ~ '생채',
+        grepl(pattern = '[가-힣*&]*장|[가-힣*&]*장',x = main) ~ '양념/장/소스',
+        grepl(pattern = '가-힣]*쌈',x = main) ~ '쌈',
+        TRUE ~ '기타'
+      ),
+    # 밥 종류
+    rice_type =
+      case_when(
+        grepl(pattern = '[가-힣]*비빔밥',x = rice1) ~ '비빔밥',
+        grepl(pattern = '[가-힣]*볶음밥',x = rice1) ~ '볶음밥',
+        grepl(pattern = '[가-힣]*영양밥',x = rice1) ~ '영양밥',
+        grepl(pattern = '[가-힣]*콩나물밥|[가-힣]*곤드레밥',x = rice1) ~ '콩나물/곤드레밥',
+        grepl(pattern = '[가-힣*]*장',x = rice1) ~ '양념장+밥',
+        grepl(pattern = '[가-힣]*덮밥|[가-힣]*라이스',x = rice1) ~ '덮밥',
+        TRUE ~ '밥'),
+    # 국 종류
+    stew_type = 
+      case_when(
+        grepl(pattern = '[가-힣]*장국',x = stew) ~ '장국',
+        grepl(pattern = '[가-힣]*무국',x = stew) ~ '무국',
+        grepl(pattern = '[가-힣]*찌개',x = stew) ~ '찌개',
+        grepl(pattern = '[가-힣]*탕',x = stew) ~ '탕',
+        grepl(pattern = '[가-힣]*개장',x = stew) ~ '개장',
+        grepl(pattern = '[가-힣]*냉국',x = stew) ~ '냉국',
+        grepl(pattern = '[가-힣]*미역국',x = stew) ~ '미역국',
+        grepl(pattern = '[가-힣]*나물국',x = stew) ~ '나물국',
+        grepl(pattern = '[가-힣]*맑은국',x = stew) ~ '맑은국',
+        grepl(pattern = '[가-힣]*북어',x = stew) ~ '북어',
+        TRUE ~ '기타국'),
+    #서브 메인 타입
+    sub_main1_type=
+      case_when(
+        grepl(pattern = '고기|치킨|돈육|닭|미트볼|소세지|함박|햄|소시지|비엔|동그랑땡',x = sub_main1) ~ '육류',
+        grepl(pattern = '메추리알|계란|두부',x = sub_main1) ~ '계란/두부',
+        grepl(pattern = '굴비|고등어|꽁치|골뱅이|맛살|임연수|갈치|동태|참치|멸치|삼치|홍어|황태|명태',x = sub_main1) ~ '생선류',
+        grepl(pattern = '쭈꾸미|주꾸미|문어|오징어|해물|해파리',x = sub_main1) ~ '오징어류',
+        grepl(pattern = '만두|어묵|',x = sub_main1) ~ '만두|어묵',
+        grepl(pattern = '감자|고구마|옥수수|과일|야채|호박|도라지|무말|브로컬리|녹두|꽈리|고추|콩나물|김치', x= sub_main1) ~ '야채/채소',
+        TRUE ~ '기타'
+      ),
+    #서브 메인 조리 방법
+    sub_main1_cook_type =
+      case_when(
+        grepl(pattern = '[가-힣]*무침',x = sub_main1) ~ '무침',
+        grepl(pattern = '[가-힣]*구이',x = sub_main1) ~ '구이',
+        grepl(pattern = '[가-힣]*전',x = sub_main1) ~ '전',
+        grepl(pattern = '[가-힣]*조림',x = sub_main1) ~ '조림',
+        grepl(pattern = '[가-힣]*볶음',x = sub_main1) ~ '볶음',
+        grepl(pattern = '[가-힣]*떡볶이',x = sub_main1) ~ '떡볶이',
+        grepl(pattern = '[가-힣]*샐러드',x = sub_main1) ~ '샐러드',
+        grepl(pattern = '[가-힣]*말이',x = sub_main1) ~ '말이',
+        grepl(pattern = '[가-힣]*잡채',x = sub_main1) ~ '잡채',
+        grepl(pattern = '[가-힣]*냉채',x = sub_main1) ~ '냉채',
+        grepl(pattern = '[가-힣]*찜',x = sub_main1) ~ '찜',
+        grepl(pattern = '[가-힣]*프리타타',x = sub_main1) ~ '프리타타',
+        grepl(pattern = '[가-힣]*생채',x = sub_main1) ~ '생채',
+        grepl(pattern = '[가-힣*&]*장|[가-힣*&]*소스',x = sub_main1) ~ '양념/장/소스',
+        grepl(pattern = '[가-힣]*쌈',x = sub_main1) ~ '쌈',
+        TRUE ~ '기타'
+      ) 
+  ) %>% 
+  select(일자,rice_type,stew_type,main_type_1,main_type_2,main_cook_type,
+           sub_main1_type,sub_main1_cook_type, sub_main2,kimchi,desert,salad) -> all_dinner2
+colnames(all_dinner2)[-1] <- paste("dinner", colnames(all_dinner2)[-1], sep = "_")
+all_dinner2
+
+
+
+all_data %>% 
+  select(-c(석식메뉴,중식메뉴)) %>% 
+  left_join(all_lunch2, by = '일자') %>% 
+  left_join(all_dinner2, by = '일자') -> all_final
+
+### data check
+all_final %>% skim()
+colnames(all_final)
+```
+
+### train/test 재분리
+
+```{r}
+train <- all_final[1:1205, ]
+test <- all_final[1205:1255, ]
+```
+
+# EDA {.tabset .tabset-fade}
+
+## barplot, boxplot function
+
+```{r}
+bar_plot <- function(data, var){
+  data %>% 
+  ggplot(aes({{var}}))+ 
+  geom_bar() + 
+  aes(stringr::str_wrap({{var}}, 10)) + 
+  geom_label(stat = 'count', aes(label = ..count..)) + 
+  xlab('{{var}}')
+}
+
+box_plot <- function(data, var){
+  if ('{{var}}' == str_detect('{{var}}', 'lunch')) {
+    data %>% 
+      ggplot(aes(x = {{var}}, y = 중식계)) +
+      geom_boxplot(aes(fill = {{var}}), show.legend = F) + 
+      aes(stringr::str_wrap({{var}}, 10)) + 
+      xlab('')
+    } else {
+      data %>% 
+        ggplot(aes(x = {{var}}, y = 석식계)) + 
+        geom_boxplot(aes(fill = {{var}}), show.legend = F) + 
+        aes(stringr::str_wrap({{var}}, 10)) + 
+        xlab('')
+      } 
+}
+```
+
+## new_recipe_lunch
+
+```{r}
+train %>% names()
+bar_plot(train, new_recipe_lunch)
+box_plot(train, new_recipe_lunch)
+```
+
+## new_recipe_dinner
+
+```{r}
+bar_plot(train, new_recipe_dinner)
+box_plot(train, new_recipe_dinner)
+
+```
+
+## lunch_rice_type
+
+```{r}
+bar_plot(train, lunch_rice_type)
+box_plot(train, lunch_rice_type)
+```
+
+## lunch_stew_type
+
+```{r}
+bar_plot(train, lunch_stew_type)
+box_plot(train, lunch_stew_type)
+
+```
+
+## lunch_main_type_1
+
+```{r}
+bar_plot(train, lunch_main_type_1)
+box_plot(train, lunch_main_type_1)
+```
+
+## lunch_main_type_2
+
+```{r}
+bar_plot(train, lunch_main_type_2)
+box_plot(train, lunch_main_type_2)
+```
+
+## lunch_main_cook_type
+
+```{r}
+bar_plot(train, lunch_main_cook_type)
+box_plot(train, lunch_main_cook_type)
+```
+
+## lunch_sub_main1_type
+
+```{r}
+bar_plot(train, lunch_sub_main1_type)
+box_plot(train, lunch_sub_main1_type)
+```
+
+## lunch_sub_main1_cook_type
+
+```{r}
+bar_plot(train, lunch_sub_main1_cook_type)
+box_plot(train, lunch_sub_main1_cook_type)
+```
+
+## lunch_sub_main2
+
+```{r}
+bar_plot(train, lunch_sub_main2)
+box_plot(train, lunch_sub_main2)
+```
+
+## lunch_kimchi
+
+```{r}
+bar_plot(train, lunch_kimchi)
+box_plot(train, lunch_kimchi)
+```
+
+## lunch_desert
+
+```{r}
+bar_plot(train, lunch_desert)
+box_plot(train, lunch_desert)
+```
+
+## lunch_salad
+
+```{r}
+bar_plot(train, lunch_salad)
+box_plot(train, lunch_salad)
+```
+
+## dinner_rice_type
+
+```{r}
+bar_plot(train, dinner_rice_type)
+box_plot(train, dinner_rice_type)
+```
+
+## dinner_stew_type
+
+```{r}
+bar_plot(train, dinner_stew_type)
+box_plot(train, dinner_stew_type)
+```
+
+## dinner_main_type_1
+
+```{r}
+bar_plot(train, dinner_main_type_1)
+box_plot(train, dinner_main_type_1)
+```
+
+## dinner_main_type_2
+
+```{r}
+bar_plot(train, dinner_main_type_2)
+box_plot(train, dinner_main_type_2)
+```
+
+## dinner_main_cook_type
+
+```{r}
+bar_plot(train, dinner_main_cook_type)
+box_plot(train, dinner_main_cook_type)
+```
+
+## dinner_sub_main1_type
+
+```{r}
+bar_plot(train, dinner_sub_main1_type)
+box_plot(train, lunch_main_type_1)
+```
+
+## dinner_sub_main1_cook_type
+
+```{r}
+bar_plot(train, dinner_sub_main1_cook_type)
+box_plot(train, dinner_sub_main1_cook_type)
+```
+
+## dinner_sub_main2
+
+```{r}
+train$dinner_sub_main2 %>% table()
+bar_plot(train, dinner_sub_main2)
+box_plot(train, dinner_sub_main2)
+```
+
+## dinner_kimchi
+
+```{r}
+bar_plot(train, dinner_kimchi)
+box_plot(train, dinner_kimchi)
+```
+
+## dinner_desert
+
+```{r}
+bar_plot(train, dinner_desert)
+box_plot(train, dinner_desert)
+```
+
+## dinner_salad
+
+```{r}
+bar_plot(train, dinner_salad)
+box_plot(train, dinner_salad)
+```
+
+# 연도별 공휴일
+
+**2016**
+
+| 명칭       | 날짜     | 명칭           | 날짜       |
+|------------|----------|----------------|------------|
+| 신정       | 1.1      | 제헌절         | 7.17       |
+| 설날       | 2.7\~2.9 | 광복절         | 8.15       |
+| 삼일절     | 3.1      | 추석           | 9.14\~9.16 |
+| 어린이날   | 5.5      | 개천절         | 10.3       |
+| 석가탄신일 | 5.14     | 한글날         | 10.9       |
+| 현충일     | 6.6      | 기독탄신일     | 12.25      |
+| 대체공휴일 | 2.10     | 국회의원선거일 | 4.13       |
+
+**2017**
+
+| 명칭       | 날짜       | 명칭         | 날짜       |
+|------------|------------|--------------|------------|
+| 신정       | 1.1        | 제헌절       | 7.17       |
+| 설날       | 1.27\~1.29 | 광복절       | 8.15       |
+| 삼일절     | 3.1        | 추석         | 10.3\~10.5 |
+| 어린이날   | 5.5        | 개천절       | 10.3       |
+| 석가탄신일 | 5.3        | 한글날       | 10.9       |
+| 현충일     | 6.6        | 기독탄신일   | 12.25      |
+| 대체공휴일 | 1.30, 10.6 | 대통령선거일 | 12.20      |
+
+**2018**
+
+| 명칭       | 날짜       | 명칭       | 날짜       |
+|------------|------------|------------|------------|
+| 신정       | 1.1        | 제헌절     | 7.17       |
+| 설날       | 2.15\~2.17 | 광복절     | 8.15       |
+| 삼일절     | 3.1        | 추석       | 9.23\~9.26 |
+| 어린이날   | 5.5        | 개천절     | 10.3       |
+| 석가탄신일 | 5.22       | 한글날     | 10.9       |
+| 현충일     | 6.6        | 기독탄신일 | 12.25      |
+| 대체공휴일 | 5.7        | 지방선거   | 6.13       |
+
+**2019**
+
+| 명칭       | 날짜     | 명칭       | 날짜       |
+|------------|----------|------------|------------|
+| 신정       | 1.1      | 제헌절     | 7.17       |
+| 설날       | 2.4\~2.6 | 광복절     | 8.15       |
+| 삼일절     | 3.1      | 추석       | 9.12\~9.14 |
+| 어린이날   | 5.5      | 개천절     | 10.3       |
+| 석가탄신일 | 5.12     | 한글날     | 10.9       |
+| 현충일     | 6.6      | 기독탄신일 | 12.25      |
+| 대체공휴일 | 5.6      |            |            |
+
+**2020**
+
+| 명칭       | 날짜       | 명칭           | 날짜       |
+|------------|------------|----------------|------------|
+| 신정       | 1.1        | 제헌절         | 7.17       |
+| 설날       | 1.24\~1.26 | 광복절         | 8.15       |
+| 삼일절     | 3.1        | 추석           | 9.30\~10.2 |
+| 어린이날   | 5.5        | 개천절         | 10.3       |
+| 석가탄신일 | 4.30       | 한글날         | 10.9       |
+| 현충일     | 6.6        | 기독탄신일     | 12.25      |
+| 대체공휴일 | 1.27       | 국회의원선거일 | 4.15       |
+
+
+# anomaly detection
+
+```{r}
+train %>% 
+  as_tibble() %>% 
+  select(일자, 석식계) %>% 
+  time_decompose(석식계) %>% 
+  anomalize(remainder, alpha = 0.25, max_anoms = 0.1) %>% 
+  time_recompose() %>% 
+  plot_anomalies()
+```
+
+```{r}
+train %>% 
+  as_tibble() %>% 
+  select(일자, 석식계) %>% 
+  time_decompose(석식계, merge = T) %>% 
+  anomalize(remainder, alpha = 0.25, max_anoms = 0.1) %>% 
+  time_recompose() %>% 
+  filter(anomaly == 'Yes') -> anomaly_data
+
+anomaly_data %>% 
+  ggplot(aes(x = 석식계)) + geom_histogram()
+
+train$석식계[train$석식계 == 0] %>% NROW()
+
+anomaly_data %>% 
+  filter(!석식계 == 0) %>% 
+  ggplot(aes(x = 석식계)) + geom_histogram()
+
+anomaly_data %>% 
+  filter(!석식계 == 0) -> anomaly_data2
+
+```
+
+# 공휴일 전후 
+공휴일 다음날은 석식을 먹는 사람이 많음 
+공휴일 전날은 석식을 먹지 않는 사람이 많음 
+
+```{r}
+anomaly_data2 %>% 
+  filter(석식계 <= 125)
+
+anomaly_data2 %>% 
+  filter(석식계 >= 750)
+```
+
+## 공휴일 +-2~3일에 해당하는 파생변수 생성 
+
+```{r}
+holiday <- c('2017-01-01', '2018-01-01', '2019-01-01', '2020-01-01', 
+             '2016-03-01', '2017-03-01', '2018-03-01', '2019-03-01', '2020-03-01', 
+             '2016-05-05', '2017-05-05', '2018-05-05', '2019-05-05', '2020-05-05', 
+             '2016-06-06', '2017-06-06', '2018-06-06', '2019-06-06', '2020-06-06', 
+             '2016-07-17', '2017-07-17', '2018-07-17', '2019-07-17', '2020-07-17',
+             '2016-08-15', '2017-08-15', '2018-08-15', '2019-08-15', '2020-08-15',
+             '2016-10-03', '2017-10-03', '2018-10-03', '2019-10-03', '2020-10-03',
+             '2016-10-09', '2017-10-09', '2018-10-09', '2019-10-09', '2020-10-09',
+             '2016-12-25', '2017-12-25', '2018-12-25', '2019-12-25', '2020-12-25',
+             '2016-05-14', '2017-05-03', '2018-05-22', '2019-05-12', '2020-04-30',
+             '2016-04-13', '2017-12-20', '2018-06-13', '2020-04-15', 
+             '2016-02-10', '2017-01-30', '2017-10-06', '2018-05-07', '2019-05-06',
+             '2016-01-27', 
+             # 설날 
+             '2016-02-07', '2016-02-08', '2016-02-09', 
+             '2017-01-27', '2017-01-28', '2017-01-29', 
+             '2018-02-15', '2018-02-16', '2018-02-17', 
+             '2019-02-04', '2019-02-05', '2019-02-06',
+             '2020-01-24', '2020-01-25', '2020-01-26',
+             # 추석 
+             '2016-09-14', '2016-09-15', '2016-09-16',   
+             '2017-10-03', '2017-10-04', '2017-10-05', 
+             '2018-09-23', '2018-09-24', '2018-09-25', '2018-09-25',
+             '2019-09-12', '2019-09-13', '2019-09-14',
+             '2020-09-30', '2020-10-01', '2020-10-02'
+            )
+
+
+```
+
+## 설날일 때 식수인원 패턴은 동일한가?
+
+```{r}
+train %>% 
+  filter(일자 >= '2016-02-04' & 일자 <= '2016-02-11'|
+           일자 >= '2017-01-24' & 일자 <= '2017-02-01'|
+           일자 >= '2018-02-12' & 일자 <= '2018-02-20'|
+           일자 >= '2019-02-01' & 일자 <= '2019-02-09'|
+           일자 >= '2020-01-22' & 일자 <= '2020-01-30'
+           ) %>% 
+  select(석식계)
+
+train %>% 
+  filter(일자 >= '2016-02-04' & 일자 <= '2016-02-11'|
+           일자 >= '2017-01-24' & 일자 <= '2017-02-01'|
+           일자 >= '2018-02-12' & 일자 <= '2018-02-20'|
+           일자 >= '2019-02-01' & 일자 <= '2019-02-09'|
+           일자 >= '2020-01-22' & 일자 <= '2020-01-30'
+           ) %>% 
+  select(중식계)
+
+```
+
+## split train/test
+
+```{r}
+train %>% names()
+train_lunch <- train %>% select(-석식계, -starts_with(c('lunch', 'dinner')), -ends_with(c('lunch', 'dinner')))
+train_dinner <- train %>% select(-중식계, -starts_with(c('lunch', 'dinner')), -ends_with(c('lunch', 'dinner')))
+
+```
+
+## 참고 자료
+
+<https://statkclee.github.io/comp_document/regex-r.html>
+
+<https://www.youtube.com/watch?v=t3M6toIflyQ>
+
+<https://cran.r-project.org/web/packages/anomalize/vignettes/anomalize_quick_start_guide.html>
