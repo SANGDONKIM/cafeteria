@@ -1,0 +1,1102 @@
+---
+title: "스터디 발표자료"
+output:
+  html_document:
+    number_sections: true
+    fig_caption: true
+    toc: true
+    fig_width: 5
+    fig_height: 4
+    theme: cosmo
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.align = "center")
+```
+
+# Preparations (준비작업) {.tabset .tabset-fade}
+
+## Libraries
+
+```{r load_lib, message=FALSE, warning=FALSE, results='hide'}
+library(data.table)
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(stringr)
+library(skimr)
+library(inspectdf)
+library(anomalize) # 시계열 이상치 탐색 패키지 
+library(stacks) # tidymodels stacking 패키지 
+
+theme_set(theme_bw())
+```
+
+## Data load {.tabset .tabset-fade}
+
+데이터는 종헌님께서 정리해주신 텍스트 임베딩이 된 데이터를 불러왔습니다.
+
+```{r}
+file_path <- "./data/"
+files <- list.files(file_path)
+files
+```
+
+```{r, message=FALSE}
+train <- fread(file.path(file_path, "train_topic.csv"))
+test <- fread(file.path(file_path, "test_topic.csv"))
+sample_submission <- fread(file.path(file_path, "sample_submission.csv"), encoding = 'UTF-8')
+
+```
+
+```{r}
+train %>% head()
+train %>% glimpse()
+train %>% skim()
+```
+
+```{r}
+test %>% head()
+test %>% skim()
+```
+
+# 데이터 전처리
+
+## 날짜변수 생성
+
+1기 분들이 발표해주신 유튜브 영상을 참고해서 year, month, day, weekday 변수를 생성했습니다.
+
+```{r}
+train %>% 
+  select(-요일) %>% 
+  mutate(일자 = ymd(일자),
+           year = year(일자), 
+           month = month(일자), 
+           day = day(일자), 
+           wday = wday(일자)) %>% 
+  select(일자, year, month, wday, day, everything()) -> train
+
+
+test %>% 
+  select(-요일) %>% 
+  mutate(일자 = ymd(일자),
+           year = year(일자), 
+           month = month(일자), 
+           day = day(일자), 
+           wday = wday(일자)) %>% 
+  select(일자, year, month, wday, day, everything()) -> test
+
+```
+
+
+# EDA {.tabset .tabset-fade}
+
+## barplot, boxplot function
+
+```{r}
+bar_plot <- function(data, var){
+  data %>% 
+  ggplot(aes({{var}}))+ 
+  geom_bar() + 
+  aes(stringr::str_wrap({{var}}, 10)) + 
+  geom_label(stat = 'count', aes(label = ..count..)) + 
+  xlab('{{var}}')
+}
+
+box_plot <- function(data, var){
+  if ('{{var}}' == str_detect('{{var}}', 'lunch')) {
+    data %>% 
+      ggplot(aes(x = {{var}}, y = 중식계)) +
+      geom_boxplot(aes(fill = {{var}}), show.legend = F) + 
+      aes(stringr::str_wrap({{var}}, 10)) + 
+      xlab('')
+    } else {
+      data %>% 
+        ggplot(aes(x = {{var}}, y = 석식계)) + 
+        geom_boxplot(aes(fill = {{var}}), show.legend = F) + 
+        aes(stringr::str_wrap({{var}}, 10)) + 
+        xlab('')
+      } 
+}
+```
+
+# 연도별 공휴일
+
+**2016**
+
+| 명칭       | 날짜     | 명칭           | 날짜       |
+|------------|----------|----------------|------------|
+| 신정       | 1.1      | 제헌절         | 7.17       |
+| 설날       | 2.7\~2.9 | 광복절         | 8.15       |
+| 삼일절     | 3.1      | 추석           | 9.14\~9.16 |
+| 어린이날   | 5.5      | 개천절         | 10.3       |
+| 석가탄신일 | 5.14     | 한글날         | 10.9       |
+| 현충일     | 6.6      | 기독탄신일     | 12.25      |
+| 대체공휴일 | 2.10     | 국회의원선거일 | 4.13       |
+
+**2017**
+
+| 명칭       | 날짜       | 명칭         | 날짜       |
+|------------|------------|--------------|------------|
+| 신정       | 1.1        | 제헌절       | 7.17       |
+| 설날       | 1.27\~1.29 | 광복절       | 8.15       |
+| 삼일절     | 3.1        | 추석         | 10.3\~10.5 |
+| 어린이날   | 5.5        | 개천절       | 10.3       |
+| 석가탄신일 | 5.3        | 한글날       | 10.9       |
+| 현충일     | 6.6        | 기독탄신일   | 12.25      |
+| 대체공휴일 | 1.30, 10.6 | 대통령선거일 | 12.20      |
+
+**2018**
+
+| 명칭       | 날짜       | 명칭       | 날짜       |
+|------------|------------|------------|------------|
+| 신정       | 1.1        | 제헌절     | 7.17       |
+| 설날       | 2.15\~2.17 | 광복절     | 8.15       |
+| 삼일절     | 3.1        | 추석       | 9.23\~9.26 |
+| 어린이날   | 5.5        | 개천절     | 10.3       |
+| 석가탄신일 | 5.22       | 한글날     | 10.9       |
+| 현충일     | 6.6        | 기독탄신일 | 12.25      |
+| 대체공휴일 | 5.7        | 지방선거   | 6.13       |
+
+**2019**
+
+| 명칭       | 날짜     | 명칭       | 날짜       |
+|------------|----------|------------|------------|
+| 신정       | 1.1      | 제헌절     | 7.17       |
+| 설날       | 2.4\~2.6 | 광복절     | 8.15       |
+| 삼일절     | 3.1      | 추석       | 9.12\~9.14 |
+| 어린이날   | 5.5      | 개천절     | 10.3       |
+| 석가탄신일 | 5.12     | 한글날     | 10.9       |
+| 현충일     | 6.6      | 기독탄신일 | 12.25      |
+| 대체공휴일 | 5.6      |            |            |
+
+**2020**
+
+| 명칭       | 날짜       | 명칭           | 날짜       |
+|------------|------------|----------------|------------|
+| 신정       | 1.1        | 제헌절         | 7.17       |
+| 설날       | 1.24\~1.26 | 광복절         | 8.15       |
+| 삼일절     | 3.1        | 추석           | 9.30\~10.2 |
+| 어린이날   | 5.5        | 개천절         | 10.3       |
+| 석가탄신일 | 4.30       | 한글날         | 10.9       |
+| 현충일     | 6.6        | 기독탄신일     | 12.25      |
+| 대체공휴일 | 1.27       | 국회의원선거일 | 4.15       |
+
+
+# anomaly detection {.tabset .tabset-fade}
+
+## 석식계 
+```{r}
+train %>% 
+  as_tibble() %>% 
+  select(일자, 석식계) %>% 
+  time_decompose(석식계) %>% 
+  anomalize(remainder, alpha = 0.25, max_anoms = 0.1) %>% 
+  time_recompose() %>% 
+  plot_anomalies()
+```
+
+```{r}
+train %>% 
+  as_tibble() %>% 
+  select(일자, 석식계) %>% 
+  time_decompose(석식계, merge = T) %>% 
+  anomalize(remainder, alpha = 0.25, max_anoms = 0.1) %>% 
+  time_recompose() %>% 
+  filter(anomaly == 'Yes') -> anomaly_data
+
+anomaly_data
+
+anomaly_data %>% 
+  ggplot(aes(x = 석식계)) + geom_histogram()
+
+train$석식계[train$석식계 == 0] %>% NROW()
+
+anomaly_data %>% 
+  filter(!석식계 == 0) %>% 
+  ggplot(aes(x = 석식계)) + geom_histogram()
+
+anomaly_data %>% 
+  filter(!석식계 == 0) -> anomaly_data2
+
+```
+
+공휴일 다음날은 석식을 먹는 사람이 많음 
+공휴일 전날은 석식을 먹지 않는 사람이 많음 
+
+```{r}
+anomaly_data2 %>% 
+  filter(석식계 <= 125)
+
+anomaly_data2 %>% 
+  filter(석식계 >= 750)
+```
+
+## 중식계 
+```{r}
+train %>% 
+  as_tibble() %>% 
+  select(일자, 중식계) %>% 
+  time_decompose(중식계) %>% 
+  anomalize(remainder, alpha = 0.25, max_anoms = 0.1) %>% 
+  time_recompose() %>% 
+  plot_anomalies()
+```
+
+```{r}
+train %>% 
+  as_tibble() %>% 
+  select(일자, 중식계) %>% 
+  time_decompose(중식계, merge = T) %>% 
+  anomalize(remainder, alpha = 0.25, max_anoms = 0.1) %>% 
+  time_recompose() %>% 
+  filter(anomaly == 'Yes') -> anomaly_data3
+
+anomaly_data3
+
+anomaly_data3 %>% 
+  ggplot(aes(x = 중식계)) + geom_histogram()
+
+train$중식계[train$증식계 == 0] %>% NROW()
+
+
+```
+
+공휴일 다음날은 석식을 먹는 사람이 많음 
+공휴일 전날은 석식을 먹지 않는 사람이 많음 
+
+```{r}
+anomaly_data3 %>% 
+  filter(중식계 <= 500)
+
+anomaly_data3 %>% 
+  filter(중식계 >= 1250)
+```
+
+
+
+# 날씨 데이터 정제 {.tabset .tabset-fade}
+
+기온, 강수량, 풍속, 습도, 증기압, 이슬점온도, 현지기압, 해면기압, 일조, 일사, 적설, 시정 변수 생성(진주시 기준)
+
+기상자료개방포털 -\> 종관기상관측(ASOS) <https://data.kma.go.kr/data/grnd/selectAsosRltmList.do?pgmNo=36>
+
+## 날씨 데이터 병합
+
+```{r}
+weather2016 <- fread(file.path(file_path, "OBS_ASOS_TIM_20210703160004.csv"))
+weather2017 <- fread(file.path(file_path, "OBS_ASOS_TIM_20210703160026.csv"))
+weather2018 <- fread(file.path(file_path, "OBS_ASOS_TIM_20210703160044.csv"))
+weather2019 <- fread(file.path(file_path, "OBS_ASOS_TIM_20210703160101.csv"))
+weather2020 <- fread(file.path(file_path, "OBS_ASOS_TIM_20210703160134.csv"))
+weather2021 <- fread(file.path(file_path, "OBS_ASOS_TIM_20210703160159.csv"))
+
+weather <- weather2016 %>% 
+        bind_rows(weather2017) %>% 
+        bind_rows(weather2018) %>% 
+        bind_rows(weather2019) %>% 
+        bind_rows(weather2020) %>%
+        bind_rows(weather2021) 
+
+weather %>% names()
+```
+
+```{r}
+
+weather %>% 
+        rename("일자" = "일시", "기온" = "기온(°C)", "강수량" = "강수량(mm)", "풍속" = "풍속(m/s)",
+               "습도" = "습도(%)", "증기압" =  "증기압(hPa)", "이슬점온도" = "이슬점온도(°C)", 
+               "현지기압" = "현지기압(hPa)", "해면기압" = "해면기압(hPa)","일조" = "일조(hr)", 
+               "일사" = "일사(MJ/m2)", "적설" = "적설(cm)", "시정" = "시정(10m)") -> weather
+
+```
+
+## 날짜 변수 생성
+
+```{r}
+weather %>% 
+        mutate(
+                일자 = ymd_hm(일자), 
+                year = year(일자), 
+                month = month(일자), 
+                day = day(일자), 
+                hour = hour(일자)
+                ) -> weather
+```
+
+## 불필요한 변수 삭제
+
+적설 변수의 경우 적설량이 거의 없기 때문에 삭제
+
+```{r}
+weather$적설[weather$적설 %>% complete.cases()] # 적설량이 거의 없기 때문에 제외 
+weather %>% select(-적설) -> weather
+```
+
+증기압, 현지기압, 해면기압, 일조 일사 변수 삭제 시정은 미세먼지 및 기상현상(박무 및 연무)와 관련이 있으므로 남겨둠
+
+```{r}
+weather %>% names()
+
+weather %>% 
+        select(-c(지점, 지점명, 증기압, 현지기압, 해면기압, 일조, 일사)) %>% 
+        select(일자, year, month, day, hour, everything()) -> weather
+
+```
+
+## 결측치 채우기
+
+날씨 변수 값이 0일 경우 NA로 코딩되므로 0으로 변환
+
+```{r}
+weather %>% is.na() %>% colSums()
+weather %>% 
+        mutate_at(vars(기온, 강수량, 풍속, 습도, 이슬점온도, 시정), replace_na, 0) -> weather
+weather %>% is.na() %>% colSums()
+```
+
+## 불쾌지수, 체감온도, 폭염 변수 생성
+
+$\text{체감온도} = 13.12 + 0.6215 \times T - 11.37 \times V^{0.16} + 0.3965 \times V^{0.16} \times T \quad T \text{ : 기온}, \, V\text{ : 풍속(km/s)}$
+
+$\text{불쾌지수} = 1.8 \times \text{기온} - 0.55 \times (1 - \text{상대습도(%)})\times (1.8 \times \text{기온} - 26) + 32$
+
+| 단계      | 지수 범위   |
+|-----------|-------------|
+| 매우 높음 | 80 이상     |
+| 높음      | 75\~80 미만 |
+| 보통      | 68\~75 미만 |
+| 낮음      | 68 미만     |
+
+상대습도 : 이슬점 온도, 기온 변수를 이용해서 **humidity package**로 구할 수 있음
+
+폭염: 5\~9월에 체감온도 33도 이상인 날이 2일 이상 지속될 경우 폭염 주의보, 35도 이상인 날이 2일 이상 지속될 경우 폭염 경보
+
+체감온도 기준 : <https://www.weather.go.kr/plus/life/li_asset/HELP/basic/help_01_07.jsp> 불쾌지수 기준 : <http://www.psychiatricnews.net/news/articleView.html?idxno=10116> 폭염기준 : [\<https://ko.wikipedia.org/wiki/%ED%8F%AD%EC%97%BC\>](https://ko.wikipedia.org/wiki/%ED%8F%AD%EC%97%BC){.uri} humidity package: <https://cran.r-project.org/web/packages/humidity/humidity.pdf>
+
+```{r}
+library(humidity)
+
+weather %>% 
+        mutate( 
+                상대습도 = humidity::RH(t = 기온, Td = 이슬점온도, isK = FALSE)*0.01,
+                불쾌지수 = (1.8*기온) - (0.55*(1-상대습도))*((1.8*기온)-26) + 32,
+                풍속 = 풍속*3.6, # m/s -> km/h
+                체감온도 = 13.2 + (0.6215*기온) - (11.37*풍속^0.16) + (0.3965*풍속^0.16*기온), 
+                폭염 = if_else(체감온도>=33, 1, 0)
+                   ) -> weather
+```
+
+## day 기준으로 group by
+
+날씨 변수는 hour 기준으로 생성되었기 때문에 raw data의 day 기준으로 group by 해줌 group by를 할 때 점심, 저녁 한시간 전후의 날씨만 고려함 폭염 변수의 경우 폭염 기준에 따라 이진변수로 코딩함
+
+```{r}
+
+weather %>% 
+        select(일자, year, month, day, hour, everything()) %>%
+        
+        # 점심, 저녁 식사 시간 한시간 전까지만 filtering 
+        filter(hour >= 11 & hour <= 14 | hour>=16 & hour <=19) %>% 
+        group_by(year, month, day) %>% 
+        summarise(
+                체감온도 = mean(체감온도), 
+                불쾌지수 = mean(불쾌지수),
+                폭염 = mean(폭염), 
+                강수량 = mean(강수량), 
+                시정 = mean(시정)) %>% 
+        ungroup() -> weather_tbl
+
+weather_tbl %>% 
+        mutate(폭염 = if_else(폭염 != 0, 1, 0)) -> weather_tbl
+
+```
+
+## 미세먼지 데이터 정제
+
+기상자료개방포털에서 다운받은 데이터는 pm2.5 기준임
+
+| 등급     | PM10    | PM2.5    |
+|----------|---------|----------|
+| 좋음     | 0\~15   | 0\~30    |
+| 보통     | 16\~35  | 31\~80   |
+| 나쁨     | 36\~75  | 81\~150  |
+| 매우나쁨 | 76 이상 | 151 이상 |
+
+미세먼지 데이터 출처 <https://data.kma.go.kr/data/climate/selectDustRltmList.do?pgmNo=68>
+
+미세먼지 기준 출처 <https://www.korea.kr/special/policyCurationView.do?newsId=148864591>
+
+```{r}
+dust <- fread(file.path(file_path, "dust.csv"))
+
+dust %>% 
+        rename("일자" = "일시", "미세먼지" = "1시간평균 미세먼지농도(㎍/㎥)") %>% 
+        select(일자, 미세먼지) %>% 
+        mutate(
+                일자 = ymd_hm(일자), 
+                year = year(일자), 
+                month = month(일자), 
+                day = day(일자), 
+                hour = hour(일자)) %>% 
+        select(일자, year, month, day, hour, 미세먼지) -> dust
+dust %>% is.na() %>% colSums()
+
+dust %>% 
+        filter(hour >= 11 & hour <= 14 | hour>=16 & hour <=19) %>%
+        group_by(year, month, day) %>% 
+        summarise(미세먼지 = mean(미세먼지)) %>% 
+        ungroup() -> dust_tbl
+
+```
+
+## 미세먼지, weather 데이터 병합
+
+```{r}
+weather_tbl %>% is.na() %>% colSums()
+dust_tbl %>% is.na() %>% colSums()
+
+weather_tbl %>% left_join(dust_tbl, by = c("year", "month", "day")) %>% is.na() %>% colSums()
+
+weather_tbl %>% 
+        left_join(dust_tbl, by = c("year", "month", "day")) -> complete_tbl
+
+```
+
+## train/test와 weather 데이터 병합
+
+```{r}
+train %>% 
+        left_join(complete_tbl, by = c("year", "month", "day")) -> train
+test %>% 
+        left_join(complete_tbl, by = c("year", "month", "day")) -> test
+
+train %>% head()
+test %>% head()
+```
+
+# 공휴일 +-1\~2일에 해당하는 파생변수 생성
+
+```{r}
+holiday_left <- c('2017-01-01', '2018-01-01', '2019-01-01', '2020-01-01', '2021-01-01',
+             '2016-03-01', '2017-03-01', '2018-03-01', '2019-03-01', '2020-03-01', '2021-03-01', 
+             '2016-05-05', '2017-05-05', '2018-05-05', '2019-05-05', '2020-05-05', 
+             '2016-06-06', '2017-06-06', '2018-06-06', '2019-06-06', '2020-06-06', 
+             '2016-07-17', '2017-07-17', '2018-07-17', '2019-07-17', '2020-07-17',
+             '2016-08-15', '2017-08-15', '2018-08-15', '2019-08-15', '2020-08-15',
+             '2016-10-03', '2017-10-03', '2018-10-03', '2019-10-03', '2020-10-03',
+             '2016-10-09', '2017-10-09', '2018-10-09', '2019-10-09', '2020-10-09',
+             '2016-12-25', '2017-12-25', '2018-12-25', '2019-12-25', '2020-12-25',
+             '2016-05-14', '2017-05-03', '2018-05-22', '2019-05-12', '2020-04-30',
+             '2016-04-13', '2017-12-20', '2018-06-13', '2020-04-15', 
+             '2016-02-10', '2017-01-30', '2017-10-06', '2018-05-07', '2019-05-06',
+             '2016-01-27', '2016-02-07', '2017-01-27', '2018-02-15', '2019-02-04',
+             '2020-01-24', '2021-02-11', '2016-09-14', '2017-10-03', '2018-09-23',
+             '2019-09-12', '2020-09-30'
+             )
+
+holiday_right <- c('2017-01-01', '2018-01-01', '2019-01-01', '2020-01-01', '2021-01-01',
+             '2016-03-01', '2017-03-01', '2018-03-01', '2019-03-01', '2020-03-01', '2021-03-01', 
+             '2016-05-05', '2017-05-05', '2018-05-05', '2019-05-05', '2020-05-05', 
+             '2016-06-06', '2017-06-06', '2018-06-06', '2019-06-06', '2020-06-06', 
+             '2016-07-17', '2017-07-17', '2018-07-17', '2019-07-17', '2020-07-17',
+             '2016-08-15', '2017-08-15', '2018-08-15', '2019-08-15', '2020-08-15',
+             '2016-10-03', '2017-10-03', '2018-10-03', '2019-10-03', '2020-10-03',
+             '2016-10-09', '2017-10-09', '2018-10-09', '2019-10-09', '2020-10-09',
+             '2016-12-25', '2017-12-25', '2018-12-25', '2019-12-25', '2020-12-25',
+             '2016-05-14', '2017-05-03', '2018-05-22', '2019-05-12', '2020-04-30',
+             '2016-04-13', '2017-12-20', '2018-06-13', '2020-04-15', 
+             '2016-02-10', '2017-01-30', '2017-10-06', '2018-05-07', '2019-05-06',
+             '2016-01-27', '2016-02-09', '2017-01-29', '2018-02-17', '2019-02-06',
+             '2020-01-26', '2021-02-13', '2016-09-16', '2017-10-05', '2018-09-25',
+             '2019-09-14', '2020-10-02')
+
+
+holiday_left %>% 
+        as_tibble() %>%
+        arrange(value) %>% 
+        mutate(value = ymd(value), 
+               leftshift1 = value - 1, 
+               leftshift2 = value - 2, 
+               ) -> holiday_left
+
+
+holiday_right %>% 
+        as_tibble() %>%
+        arrange(value) %>% 
+        mutate(value = ymd(value), 
+               rightshift1 = value + 1, 
+               rightshift2 = value + 2, 
+               ) -> holiday_right
+
+
+train %>% 
+        mutate(leftshift1 = if_else(paste(str_pad(year(일자), 2, pad = "0"), 
+                                     str_pad(month(일자), 2, pad = "0"), 
+                                     str_pad(day(일자), 2, pad = "0"), sep = "-") %in% as.character(holiday_left$leftshift1), 1, 0), 
+               leftshift2 = if_else(paste(str_pad(year(일자), 2, pad = "0"), 
+                                     str_pad(month(일자), 2, pad = "0"), 
+                                     str_pad(day(일자), 2, pad = "0"), sep = "-") %in% as.character(holiday_left$leftshift2), 1, 0),
+               rightshift1 = if_else(paste(str_pad(year(일자), 2, pad = "0"), 
+                                     str_pad(month(일자), 2, pad = "0"), 
+                                     str_pad(day(일자), 2, pad = "0"), sep = "-") %in% as.character(holiday_right$rightshift1), 1, 0),
+               rightshift2 = if_else(paste(str_pad(year(일자), 2, pad = "0"), 
+                                     str_pad(month(일자), 2, pad = "0"), 
+                                     str_pad(day(일자), 2, pad = "0"), sep = "-") %in% as.character(holiday_right$rightshift2), 1, 0)
+               ) -> train
+
+test %>% 
+        mutate(leftshift1 = if_else(paste(str_pad(year(일자), 2, pad = "0"), 
+                                     str_pad(month(일자), 2, pad = "0"), 
+                                     str_pad(day(일자), 2, pad = "0"), sep = "-") %in% as.character(holiday_left$leftshift1), 1, 0), 
+               leftshift2 = if_else(paste(str_pad(year(일자), 2, pad = "0"), 
+                                     str_pad(month(일자), 2, pad = "0"), 
+                                     str_pad(day(일자), 2, pad = "0"), sep = "-") %in% as.character(holiday_left$leftshift2), 1, 0),
+               rightshift1 = if_else(paste(str_pad(year(일자), 2, pad = "0"), 
+                                     str_pad(month(일자), 2, pad = "0"), 
+                                     str_pad(day(일자), 2, pad = "0"), sep = "-") %in% as.character(holiday_right$rightshift1), 1, 0),
+               rightshift2 = if_else(paste(str_pad(year(일자), 2, pad = "0"), 
+                                     str_pad(month(일자), 2, pad = "0"), 
+                                     str_pad(day(일자), 2, pad = "0"), sep = "-") %in% as.character(holiday_right$rightshift2), 1, 0)
+               ) -> test
+
+
+train %>% mutate(
+        leftshift1 = replace(leftshift1, wday == 6, 1), 
+        leftshift2 = replace(leftshift1, wday == 6, 1), 
+        rightshift1 = replace(rightshift1, wday == 2, 1),
+        rightshift1 = replace(rightshift1, wday == 2, 1)
+) -> train
+
+test %>% mutate(
+        leftshift1 = replace(leftshift1, wday == 6, 1), 
+        leftshift2 = replace(leftshift1, wday == 6, 1), 
+        rightshift1 = replace(rightshift1, wday == 2, 1),
+        rightshift1 = replace(rightshift1, wday == 2, 1)
+) -> test
+
+
+```
+
+# Recipe
+
+```{r}
+lunch_recipe <- train %>% 
+        recipe(중식계~.) %>% 
+        step_mutate(
+                식수가능인원수 = 본사정원수 - 본사출장자수 - 본사시간외근무명령서승인건수 - 현본사소속재택근무자수,
+                강우여부 = if_else(강수량!=0, 1, 0), 
+                year = as.factor(year), 
+                wday = case_when(
+                        wday == 2 ~ "1", 
+                        wday == 3 ~ "2", 
+                        wday == 4 ~ "5", 
+                        wday == 5 ~ "3", 
+                        wday == 6 ~ "4"
+                )
+        ) %>% 
+        step_impute_bag(미세먼지, impute_with = imp_vars(시정, 체감온도, 불쾌지수, 폭염, 강수량), trees = 100) %>% 
+        #step_cut(미세먼지, breaks = c(15, 35, 75)) %>% # NA있으면 error. factor로 바뀜 
+        step_cut(불쾌지수, breaks = c(68, 75, 80)) %>%
+        step_integer(month, day, wday) %>% 
+        step_dummy(all_nominal_predictors(), one_hot = T) %>% 
+        step_rm(석식계, 일자, 본사정원수, 본사출장자수, 본사시간외근무명령서승인건수, 현본사소속재택근무자수, clust, 강수량, 시정, Topic2, Topic3)
+
+
+dinner_recipe <- train %>% 
+        recipe(석식계~.) %>% 
+        step_mutate(
+                식수가능인원수 = 본사정원수 - 본사출장자수 - 본사시간외근무명령서승인건수 - 현본사소속재택근무자수,
+                강우여부 = if_else(강수량!=0, 1, 0), 
+                year = as.factor(year), 
+                wday = case_when(
+                        wday == 2 ~ "1", 
+                        wday == 3 ~ "2", 
+                        wday == 4 ~ "5", 
+                        wday == 5 ~ "3", 
+                        wday == 6 ~ "4"
+                )
+
+        ) %>% 
+        step_impute_bag(미세먼지, impute_with = imp_vars(시정, 체감온도, 불쾌지수, 폭염, 강수량), trees = 100) %>% 
+        #step_cut(미세먼지, breaks = c(15, 35, 75)) %>% # NA있으면 error. factor로 바뀜 
+        step_cut(불쾌지수, breaks = c(68, 75, 80)) %>%
+        step_integer(month, day, wday) %>% 
+        step_dummy(all_nominal_predictors(), one_hot = T) %>% 
+        step_rm(중식계, 일자, 본사정원수, 본사출장자수, 본사시간외근무명령서승인건수, 현본사소속재택근무자수, clust, 강수량, 시정, Topic4)
+
+```
+
+# juice/bake
+
+```{r}
+train_lunch <-  lunch_recipe %>% prep() %>% juice()
+train_dinner <- dinner_recipe %>% prep() %>% juice()
+
+test_lunch <- lunch_recipe %>% prep() %>% bake(new_data = test)
+test_dinner <- dinner_recipe %>% prep() %>% bake(new_data = test)
+
+```
+
+# Validation set
+
+<https://www.tmwr.org/resampling.html>
+
+```{r}
+set.seed(123)
+
+vb_folds_lunch <- vfold_cv(train_lunch, v = 5, strata = 중식계)
+vb_folds_dinner <- vfold_cv(train_dinner, v = 5, strata = 석식계)
+
+```
+
+# Model setting
+
+# stacking parameter
+
+```{r}
+ctrl_grid <- control_stack_grid()
+
+```
+
+# XGBOOST {.tabset .tabset-fade}
+
+## XGBOOST workflow
+
+```{r}
+library(treesnip)
+
+xgb_spec <- boost_tree(
+        trees = 50000, 
+        tree_depth = tune(), 
+        mtry = tune(), 
+        min_n = tune(), 
+        loss_reduction = tune(), 
+        sample_size = tune(), 
+        learn_rate = tune()
+        ) %>% set_engine('xgboost') %>% 
+        set_mode('regression')
+
+xgb_grid_lunch <- grid_latin_hypercube(
+  tree_depth(),
+  min_n(),
+  loss_reduction(),
+  sample_size = sample_prop(),
+  finalize(mtry(), train_lunch),
+  learn_rate(),
+  size = 500
+)
+
+xgb_grid_dinner <- grid_latin_hypercube(
+  tree_depth(),
+  min_n(),
+  loss_reduction(),
+  sample_size = sample_prop(),
+  finalize(mtry(), train_dinner),
+  learn_rate(),
+  size = 500
+)
+
+xgb_wf_lunch <- workflow() %>% 
+        add_formula(중식계~.) %>% 
+        add_model(xgb_spec)
+
+xgb_wf_dinner <- workflow() %>% 
+        add_formula(석식계~.) %>% 
+        add_model(xgb_spec)
+
+```
+
+## xgb tuning
+
+```{r}
+library(tictoc)
+library(doParallel)
+all_cores <- parallel::detectCores(logical = FALSE)-3
+registerDoParallel(cores = all_cores)
+
+tic()
+xgb_res_lunch <- tune_grid(
+    xgb_wf_lunch,  
+    resamples = vb_folds_lunch,
+    grid = xgb_grid_lunch, 
+    metrics = yardstick::metric_set(mae),
+    control = ctrl_grid    
+)
+toc() # 1431.95 sec elapsed
+
+tic()
+xgb_res_dinner <- tune_grid(
+    xgb_wf_dinner,  
+    resamples = vb_folds_dinner, 
+    grid = xgb_grid_dinner, 
+    metrics = yardstick::metric_set(mae),
+    control = ctrl_grid    
+)
+toc() # 1254.3 sec elapsed
+
+
+```
+
+## model fitting
+
+```{r}
+best_param_xgb_lunch <- select_best(xgb_res_lunch)
+best_param_xgb_dinner <- select_best(xgb_res_dinner)
+
+final_xgb_lunch <- finalize_workflow(xgb_wf_lunch, best_param_xgb_lunch)
+final_xgb_dinner <- finalize_workflow(xgb_wf_dinner, best_param_xgb_dinner)
+
+xgb_fit_lunch <- fit(final_xgb_lunch, data = train_lunch)
+xgb_fit_dinner <- fit(final_xgb_dinner, data = train_dinner)
+
+```
+
+## Feature importance plot
+
+```{r}
+library(vip)
+
+xgb_fit_lunch %>% 
+        pull_workflow_fit() %>% 
+        vip(geom = 'point')
+
+xgb_fit_dinner %>% 
+        pull_workflow_fit() %>% 
+        vip(geom = 'point')
+
+```
+
+## prediction
+
+```{r}
+pred_xgb_lunch <- 
+        predict(xgb_fit_lunch, test_lunch) %>% 
+        round()
+
+pred_xgb_dinner <- 
+        predict(xgb_fit_dinner, test_dinner) %>% 
+        round()
+        
+
+sample_submission <- fread(file.path(file_path, "sample_submission.csv"), encoding = 'UTF-8')
+
+sample_submission$중식계 <- pred_xgb_lunch
+sample_submission$석식계 <- pred_xgb_dinner
+
+write.csv(sample_submission, 'xgb_fit_10000.csv', row.names = F, fileEncoding = 'UTF-8')
+```
+
+# Random forest {.tabset .tabset-fade}
+
+## Random forest workflow
+
+```{r}
+
+rf_spec <- rand_forest(
+        trees = 50000, 
+        mtry = tune(), 
+        min_n = tune()
+        ) %>% set_engine('ranger') %>% 
+        set_mode('regression')
+
+rf_grid_lunch <- grid_latin_hypercube(
+  min_n(),
+  finalize(mtry(), train_lunch),
+  size = 200
+)
+
+rf_grid_dinner <- grid_latin_hypercube(
+  min_n(),
+  finalize(mtry(), train_dinner),
+  size = 30
+)
+
+rf_wf_lunch <- workflow() %>% 
+        add_formula(중식계~.) %>% 
+        add_model(rf_spec)
+
+rf_wf_dinner <- workflow() %>% 
+        add_formula(석식계~.) %>% 
+        add_model(rf_spec)
+```
+
+## rf tuning
+
+```{r}
+library(tictoc)
+library(doParallel)
+all_cores <- parallel::detectCores(logical = FALSE)-1 
+registerDoParallel(cores = all_cores)
+
+tic()
+rf_res_lunch <- tune_grid(
+    rf_wf_lunch,  
+    resamples = vb_folds_lunch,
+    grid = rf_grid_lunch, 
+    control = ctrl_grid    
+)
+toc() # 
+
+tic()
+rf_res_dinner <- tune_grid(
+    rf_wf_dinner,  
+    resamples = vb_folds_dinner, 
+    grid = rf_grid_dinner, 
+    control = ctrl_grid    
+)
+toc() # 
+
+
+```
+
+## model fitting
+
+```{r}
+best_param_rf_lunch <- select_best(rf_res_lunch)
+best_param_rf_dinner <- select_best(rf_res_dinner)
+
+final_rf_lunch <- finalize_workflow(rf_wf_lunch, best_param_rf_lunch)
+final_rf_dinner <- finalize_workflow(rf_wf_dinner, best_param_rf_dinner)
+
+rf_fit_lunch <- fit(final_rf_lunch, data = train_lunch)
+rf_fit_dinner <- fit(final_rf_dinner, data = train_dinner)
+
+```
+
+
+## prediction
+
+```{r}
+pred_rf_lunch <- 
+        predict(rf_fit_lunch, test_lunch) %>% 
+        round()
+
+pred_rf_dinner <- 
+        predict(rf_fit_dinner, test_dinner) %>% 
+        round()
+        
+
+sample_submission <- fread(file.path(file_path, "sample_submission.csv"), encoding = 'UTF-8')
+
+sample_submission$중식계 <- pred_rf_lunch
+sample_submission$석식계 <- pred_rf_dinner
+
+write.csv(sample_submission, 'rf_fit.csv', row.names = F, fileEncoding = 'UTF-8')
+```
+
+
+# Lasso, ridge, elastic net {.tabset .tabset-fade}
+
+## workflow
+
+```{r}
+
+# LASSO 
+lasso_spec <- linear_reg(penalty = tune(), mixture = 1) %>% # mixture = 1 : LASSO, 0 : ridge 
+  set_engine("glmnet")
+
+# Ridge 
+ridge_spec <- linear_reg(penalty = tune(), mixture = 0) %>% # mixture = 1 : LASSO, 0 : ridge 
+  set_engine("glmnet")
+
+# elastic net 
+elastic_spec <- linear_reg(penalty = tune(), mixture = tune()) %>%  
+  set_engine("glmnet")
+
+lasso_ridge_grid <- grid_regular(
+  penalty(), levels = 30
+)
+
+elastic_grid <- grid_regular(
+  penalty(), mixture(), levels = 30
+)
+
+lasso_wf_lunch <- workflow() %>% 
+        add_formula(중식계~.) %>% 
+        add_model(lasso_spec)
+
+lasso_wf_dinner <- workflow() %>% 
+        add_formula(석식계~.) %>% 
+        add_model(lasso_spec)
+
+ridge_wf_lunch <- workflow() %>% 
+        add_formula(중식계~.) %>% 
+        add_model(ridge_spec)
+
+ridge_wf_dinner <- workflow() %>% 
+        add_formula(석식계~.) %>% 
+        add_model(ridge_spec)
+
+elastic_wf_lunch <- workflow() %>% 
+        add_formula(중식계~.) %>% 
+        add_model(elastic_spec)
+
+elastic_wf_dinner <- workflow() %>% 
+        add_formula(석식계~.) %>% 
+        add_model(elastic_spec)
+
+```
+
+## hyparameter tuning
+
+```{r}
+library(tictoc)
+library(doParallel)
+all_cores <- parallel::detectCores(logical = FALSE)-1 
+registerDoParallel(cores = all_cores)
+
+tic()
+lasso_res_lunch <- tune_grid(
+    lasso_wf_lunch,  
+    resamples = vb_folds_lunch,
+    grid = lasso_ridge_grid,
+    control = ctrl_grid    
+)
+toc() # 16.36
+
+tic()
+lasso_res_dinner <- tune_grid(
+    lasso_wf_dinner,  
+    resamples = vb_folds_dinner,
+    grid = lasso_ridge_grid,
+    control = ctrl_grid    
+)
+toc() # 4.19
+
+tic()
+ridge_res_lunch <- tune_grid(
+    ridge_wf_lunch,  
+    resamples = vb_folds_lunch,
+    grid = lasso_ridge_grid,
+    control = ctrl_grid    
+)
+toc() # 16.36
+
+tic()
+ridge_res_dinner <- tune_grid(
+    ridge_wf_dinner,  
+    resamples = vb_folds_dinner,
+    grid = lasso_ridge_grid,
+    control = ctrl_grid    
+)
+toc() # 44.19
+
+tic()
+elastic_res_lunch <- tune_grid(
+    elastic_wf_lunch,  
+    resamples = vb_folds_lunch,
+    grid = elastic_grid,
+    control = ctrl_grid    
+)
+toc() # 109.2
+
+tic()
+elastic_res_dinner <- tune_grid(
+    elastic_wf_dinner,  
+    resamples = vb_folds_dinner,
+    grid = elastic_grid,
+    control = ctrl_grid    
+)
+toc() # 130
+
+```
+
+## model fitting
+
+```{r}
+best_param_lasso_lunch <- select_best(lasso_res_lunch)
+best_param_lasso_dinner <- select_best(lasso_res_dinner)
+
+final_lasso_lunch <- finalize_workflow(lasso_wf_lunch, best_param_lasso_lunch)
+final_lasso_dinner <- finalize_workflow(lasso_wf_dinner, best_param_lasso_dinner)
+
+lasso_fit_lunch <- fit(final_lasso_lunch, data = train_lunch)
+lasso_fit_dinner <- fit(final_lasso_dinner, data = train_dinner)
+
+best_param_ridge_lunch <- select_best(ridge_res_lunch)
+best_param_ridge_dinner <- select_best(ridge_res_dinner)
+
+final_ridge_lunch <- finalize_workflow(ridge_wf_lunch, best_param_ridge_lunch)
+final_ridge_dinner <- finalize_workflow(ridge_wf_dinner, best_param_ridge_dinner)
+
+ridge_fit_lunch <- fit(final_ridge_lunch, data = train_lunch)
+ridge_fit_dinner <- fit(final_ridge_dinner, data = train_dinner)
+
+best_param_elastic_lunch <- select_best(elastic_res_lunch)
+best_param_elastic_dinner <- select_best(elastic_res_dinner)
+
+final_elastic_lunch <- finalize_workflow(elastic_wf_lunch, best_param_elastic_lunch)
+final_elastic_dinner <- finalize_workflow(elastic_wf_dinner, best_param_elastic_dinner)
+
+elastic_fit_lunch <- fit(final_elastic_lunch, data = train_lunch)
+elastic_fit_dinner <- fit(final_elastic_dinner, data = train_dinner)
+```
+# stacking {.tabset .tabset-fade}
+
+## blending 
+```{r}
+stacking_model_lunch <- 
+  # initialize the stack
+  stacks() %>%
+  # add candidate members
+  add_candidates(lasso_res_lunch) %>%
+  add_candidates(ridge_res_lunch) %>%
+  add_candidates(elastic_res_lunch) %>%
+  add_candidates(xgb_res_lunch) %>%
+  add_candidates(rf_res_lunch) %>%
+  # determine how to combine their predictions
+  blend_predictions() %>%
+  # fit the candidates with nonzero stacking coefficients
+  fit_members()
+
+stacking_model_dinner <- 
+        # initialize the stack
+        stacks() %>%
+        # add candidate members
+        add_candidates(lasso_res_dinner) %>%
+        add_candidates(ridge_res_dinner) %>%
+        add_candidates(elastic_res_dinner) %>%
+        add_candidates(xgb_res_dinner) %>%
+        add_candidates(rf_res_dinner) %>%
+        # determine how to combine their predictions
+        blend_predictions() %>%
+        # fit the candidates with nonzero stacking coefficients
+        fit_members()
+
+
+stacking_pred_lunch <-
+  test_lunch %>%
+  bind_cols(predict(stacking_model_lunch, .))
+
+stacking_pred_dinner <-
+  test_dinner %>%
+  bind_cols(predict(stacking_model_dinner, .))
+
+stacking_pred_dinner
+stacking_pred_lunch
+
+```
+## prediction
+
+```{r}
+
+stacking_pred_lunch <- stacking_pred_lunch %>% 
+        round()
+
+stacking_pred_dinner <- stacking_pred_dinner %>% 
+        round()
+
+
+sample_submission <- fread(file.path(file_path, "sample_submission.csv"), encoding = 'UTF-8')
+
+sample_submission$중식계 <- stacking_pred_lunch$.pred
+sample_submission$석식계 <- stacking_pred_dinner$.pred
+
+write.csv(sample_submission, 'stacking_fit.csv', row.names = F, fileEncoding = 'UTF-8')
+
+```
+
